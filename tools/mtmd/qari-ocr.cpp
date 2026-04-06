@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: MIT OR LicenseRef-QARI-OCR-COMMERCIAL
+// Qari OCR addition: see NOTICE-QARI-OCR.md and LICENSE-QARI-OCR-COMMERCIAL.md
+
 #include "llama.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
+#include <algorithm>
 #include <clocale>
 #include <cstdio>
 #include <cstring>
@@ -12,7 +16,7 @@
 static void print_usage(const char * prog) {
     fprintf(stderr,
         "Usage:\n"
-        "  %s -m <text-model.gguf> -i <image> [--mmproj <mmproj.gguf>] [--prompt <text>] [-n <predict>] [-ngl <layers>] [--image-min-tokens <n>] [--image-max-tokens <n>] [-o <output.txt>]\\n\\n"
+        "  %s -m <text-model.gguf> -i <image> [--mmproj <mmproj.gguf>] [--prompt <text>] [-n <predict>] [-ngl <layers>] [--image-min-tokens <n>] [--image-max-tokens <n>] [--max-continue-rounds <n>] [-o <output.txt>]\\n\\n"
         "Example:\n"
         "  %s -m ../qari-ocr-q8_0.gguf --mmproj ../qari-mmproj-f16.gguf -i document.jpg --prompt \"Extract all text exactly.\" -n 512 -ngl 99\\n"
         "\n"
@@ -44,6 +48,7 @@ int main(int argc, char ** argv) {
     int n_gpu_layers = 99;
     int image_min_tokens = 256;
     int image_max_tokens = 1024;
+    int max_continue_rounds = 4;
 
     for (int i = 1; i < argc; ++i) {
         if ((strcmp(argv[i], "-m") == 0 || strcmp(argv[i], "--model") == 0) && i + 1 < argc) {
@@ -62,6 +67,8 @@ int main(int argc, char ** argv) {
             image_min_tokens = std::stoi(argv[++i]);
         } else if (strcmp(argv[i], "--image-max-tokens") == 0 && i + 1 < argc) {
             image_max_tokens = std::stoi(argv[++i]);
+        } else if (strcmp(argv[i], "--max-continue-rounds") == 0 && i + 1 < argc) {
+            max_continue_rounds = std::stoi(argv[++i]);
         } else if ((strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--output") == 0) && i + 1 < argc) {
             output_path = argv[++i];
         } else {
@@ -185,31 +192,87 @@ int main(int argc, char ** argv) {
 
     std::string output_text;
     printf("\n");
-    for (int i = 0; i < n_predict; ++i) {
-        llama_token tok = llama_sampler_sample(sampler, ctx, -1);
-        if (llama_vocab_is_eog(vocab, tok)) {
+    int generated_total = 0;
+    int continue_round = 0;
+
+    while (generated_total < n_predict) {
+        bool hit_eog = false;
+        int generated_this_round = 0;
+
+        for (; generated_total < n_predict; ++generated_total) {
+            llama_token tok = llama_sampler_sample(sampler, ctx, -1);
+            if (llama_vocab_is_eog(vocab, tok)) {
+                hit_eog = true;
+                break;
+            }
+
+            std::string piece;
+            if (!token_to_piece(vocab, tok, piece)) {
+                fprintf(stderr, "\nerror: token_to_piece failed\n");
+                hit_eog = false;
+                generated_total = n_predict;
+                break;
+            }
+
+            printf("%s", piece.c_str());
+            fflush(stdout);
+            output_text += piece;
+            ++generated_this_round;
+
+            llama_sampler_accept(sampler, tok);
+
+            llama_batch batch = llama_batch_get_one(&tok, 1);
+            if (llama_decode(ctx, batch) != 0) {
+                fprintf(stderr, "\nerror: llama_decode failed while generating\n");
+                hit_eog = false;
+                generated_total = n_predict;
+                break;
+            }
+
+            ++n_past;
+        }
+
+        if (!hit_eog || generated_total >= n_predict) {
             break;
         }
 
-        std::string piece;
-        if (!token_to_piece(vocab, tok, piece)) {
-            fprintf(stderr, "\nerror: token_to_piece failed\n");
+        if (generated_this_round == 0 || continue_round >= max_continue_rounds) {
             break;
         }
 
-        printf("%s", piece.c_str());
-        fflush(stdout);
-        output_text += piece;
+        const std::string continue_prompt =
+            "<|im_end|>\n"
+            "<|im_start|>user\n"
+            "Continue exactly where you stopped. Do not repeat any previous text. Keep transcribing the remaining page.\n"
+            "<|im_end|>\n"
+            "<|im_start|>assistant\n";
 
-        llama_sampler_accept(sampler, tok);
+        mtmd_input_text continue_text = {
+            continue_prompt.c_str(),
+            false,
+            true,
+        };
 
-        llama_batch batch = llama_batch_get_one(&tok, 1);
-        if (llama_decode(ctx, batch) != 0) {
-            fprintf(stderr, "\nerror: llama_decode failed while generating\n");
+        mtmd_input_chunks * continue_chunks = mtmd_input_chunks_init();
+        if (!continue_chunks) {
+            fprintf(stderr, "\nerror: failed to allocate continuation chunks\n");
             break;
         }
 
-        ++n_past;
+        if (mtmd_tokenize(mctx, continue_chunks, &continue_text, nullptr, 0) != 0) {
+            fprintf(stderr, "\nerror: failed to tokenize continuation prompt\n");
+            mtmd_input_chunks_free(continue_chunks);
+            break;
+        }
+
+        if (mtmd_helper_eval_chunks(mctx, ctx, continue_chunks, n_past, 0, ctx_params.n_batch, true, &n_past) != 0) {
+            fprintf(stderr, "\nerror: failed to eval continuation prompt\n");
+            mtmd_input_chunks_free(continue_chunks);
+            break;
+        }
+
+        mtmd_input_chunks_free(continue_chunks);
+        ++continue_round;
     }
     printf("\n");
 

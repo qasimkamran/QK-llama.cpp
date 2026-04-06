@@ -109,3 +109,9 @@ add_executable(llama-mtmd-debug debug/mtmd-debug.cpp)
 set_target_properties(llama-mtmd-debug PROPERTIES OUTPUT_NAME llama-mtmd-debug)
 target_link_libraries(llama-mtmd-debug PRIVATE common mtmd Threads::Threads)
 target_compile_features(llama-mtmd-debug PRIVATE cxx_std_17)
+
+# qari ocr helper tool
+add_executable(llama-qari-ocr qari-ocr.cpp)
+set_target_properties(llama-qari-ocr PROPERTIES OUTPUT_NAME llama-qari-ocr)
+target_link_libraries(llama-qari-ocr PRIVATE mtmd Threads::Threads)
+target_compile_features(llama-qari-ocr PRIVATE cxx_std_17)

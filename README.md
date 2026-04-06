@@ -69,6 +69,46 @@ cmake -S . -B build \
 cmake --build build --target llama-qari-ocr -j2
 ```
 
+## Dependencies
+
+For another project to use this fork for inference, you typically need only:
+
+- `llama-qari-ocr` executable
+- Text GGUF model file
+- Matching `mmproj` GGUF file
+- Backend runtime dependencies for your platform/GPU
+
+### Windows
+
+- `llama-qari-ocr.exe`
+- Model files: `*.gguf` (text) + `mmproj-*.gguf` (email the maintainer for access to these).
+
+#### AMD (Vulkan)
+
+- AMD GPU driver with Vulkan support
+- Vulkan runtime / ICD available on system
+
+#### NVIDIA (CUDA)
+
+- NVIDIA driver
+- CUDA runtime compatible with your build
+
+### Linux
+
+- `llama-qari-ocr` binary
+- Model files: `*.gguf` (text) + `mmproj-*.gguf` (email the maintainer for access to these).
+
+#### AMD (Vulkan)
+
+- AMD Vulkan-capable driver stack (Mesa/AMDGPU-PRO as applicable)
+- Vulkan loader/runtime (`libvulkan`)
+
+#### NVIDIA (CUDA or Vulkan)
+
+- NVIDIA driver
+- for CUDA builds: compatible CUDA runtime libraries
+- for Vulkan builds: Vulkan loader/runtime (`libvulkan`)
+
 ## Inference (OCR)
 
 The OCR tool in this fork is:

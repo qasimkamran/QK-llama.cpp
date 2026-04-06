@@ -79,7 +79,7 @@ For another project to use this fork for inference, you typically need only:
 - Backend runtime dependencies for your platform/GPU
 
 ### Windows
-
+---
 - `llama-qari-ocr.exe`
 - Model files: `*.gguf` (text) + `mmproj-*.gguf` (email the maintainer for access to these).
 
@@ -94,7 +94,7 @@ For another project to use this fork for inference, you typically need only:
 - CUDA runtime compatible with your build
 
 ### Linux
-
+---
 - `llama-qari-ocr` binary
 - Model files: `*.gguf` (text) + `mmproj-*.gguf` (email the maintainer for access to these).
 

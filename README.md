@@ -39,6 +39,17 @@ Getting started with llama.cpp is straightforward. Here are several ways to inst
 - Download pre-built binaries from the [releases page](https://github.com/ggml-org/llama.cpp/releases)
 - Build from source by cloning this repository - check out [our build guide](docs/build.md)
 
+If you hit build failures such as `cc1plus` getting killed (out of memory), Vulkan shader link errors from a stale `build/` directory, or `Operation not permitted` while creating `.so` symlinks (common on some WSL/Windows mounts), use a clean static Release build:
+
+```sh
+rm -rf build
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DGGML_VULKAN=OFF \
+  -DBUILD_SHARED_LIBS=OFF
+cmake --build build/ --config Release -j2
+```
+
 Once installed, you'll need a model to work with. Head to the [Obtaining and quantizing models](#obtaining-and-quantizing-models) section to learn more.
 
 Example command:

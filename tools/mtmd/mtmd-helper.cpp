@@ -504,7 +504,7 @@ mtmd_bitmap * mtmd_helper_bitmap_init_from_buf(mtmd_context * ctx, const unsigne
 
 mtmd_bitmap * mtmd_helper_bitmap_init_from_file(mtmd_context * ctx, const char * fname) {
     std::vector<unsigned char> buf;
-    FILE * f = fopen(fname, "rb");
+    FILE * f = ggml_fopen(fname, "rb");
     if (!f) {
         LOG_ERR("Unable to open file %s: %s\n", fname, strerror(errno));
         return nullptr;

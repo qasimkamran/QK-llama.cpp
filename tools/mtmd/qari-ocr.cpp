@@ -13,6 +13,15 @@
 #include <thread>
 #include <vector>
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#   define NOMINMAX
+#endif
+#include <windows.h>
+#include <shellapi.h>
+#endif
+
 static void print_usage(const char * prog) {
     fprintf(stderr,
         "Usage:\n"
@@ -36,7 +45,7 @@ static bool token_to_piece(const llama_vocab * vocab, llama_token tok, std::stri
     return true;
 }
 
-int main(int argc, char ** argv) {
+static int qari_ocr_main(int argc, char ** argv) {
     std::setlocale(LC_NUMERIC, "C");
 
     std::string model_path;
@@ -277,7 +286,7 @@ int main(int argc, char ** argv) {
     printf("\n");
 
     if (!output_path.empty()) {
-        FILE * fout = fopen(output_path.c_str(), "wb");
+        FILE * fout = ggml_fopen(output_path.c_str(), "wb");
         if (!fout) {
             fprintf(stderr, "error: failed to open output file: %s\n", output_path.c_str());
             llama_sampler_free(sampler);
@@ -304,3 +313,46 @@ int main(int argc, char ** argv) {
 
     return 0;
 }
+
+#if defined(_WIN32)
+static std::string wide_to_utf8(const wchar_t * wstr) {
+    if (!wstr) {
+        return {};
+    }
+    int size = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, nullptr, 0, nullptr, nullptr);
+    if (size <= 1) {
+        return {};
+    }
+    std::string out((size_t) size - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wstr, -1, out.data(), size, nullptr, nullptr);
+    return out;
+}
+
+int main() {
+    int argc_w = 0;
+    wchar_t ** argv_w = CommandLineToArgvW(GetCommandLineW(), &argc_w);
+    if (!argv_w || argc_w <= 0) {
+        fprintf(stderr, "error: failed to parse command line\n");
+        return 1;
+    }
+
+    std::vector<std::string> argv_storage;
+    argv_storage.reserve((size_t) argc_w);
+    std::vector<char *> argv_utf8;
+    argv_utf8.reserve((size_t) argc_w);
+
+    for (int i = 0; i < argc_w; ++i) {
+        argv_storage.emplace_back(wide_to_utf8(argv_w[i]));
+    }
+    for (auto & arg : argv_storage) {
+        argv_utf8.push_back(arg.data());
+    }
+
+    LocalFree(argv_w);
+    return qari_ocr_main((int) argv_utf8.size(), argv_utf8.data());
+}
+#else
+int main(int argc, char ** argv) {
+    return qari_ocr_main(argc, argv);
+}
+#endif

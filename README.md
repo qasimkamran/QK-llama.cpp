@@ -41,32 +41,25 @@ python convert_hf_to_gguf.py NAMAA-Space/Qari-OCR-v0.3-VL-2B-Instruct \
 ### Windows 11 / AMD (Vulkan)
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
-  -DGGML_VULKAN=ON `
-  -DBUILD_SHARED_LIBS=OFF
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
-cmake --build build --target llama-qari-ocr --config Release -j2
+cmake --build build --config Release -j
 ```
 
 ### Windows / NVIDIA (CUDA)
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
-  -DGGML_CUDA=ON `
-  -DBUILD_SHARED_LIBS=OFF
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
-cmake --build build --target llama-qari-ocr --config Release -j2
+cmake --build build --config Release -j
 ```
 
 ### Linux / WSL (Vulkan)
 
 ```bash
-cmake -S . -B build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DGGML_VULKAN=ON \
-  -DBUILD_SHARED_LIBS=OFF
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
-cmake --build build --target llama-qari-ocr -j2
+cmake --build build --config Release -j
 ```
 
 ## Dependencies

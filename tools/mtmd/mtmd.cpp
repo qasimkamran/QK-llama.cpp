@@ -3,7 +3,6 @@
 #include "mtmd.h"
 #include "mtmd-audio.h"
 #include "mtmd-image.h"
-#include "debug/mtmd-debug.h"
 
 #include "llama.h"
 

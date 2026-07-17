@@ -21,7 +21,7 @@
  * WARNING: This API is experimental and subject to many BREAKING CHANGES.
  *          Issues related to API usage may receive lower priority support.
  *
- * For the usage, see an example in mtmd-cli.cpp
+ * For the usage, see qari-ocr.cpp.
  *
  * For contributors:
  * - Make sure the C API is aligned with the libllama C API (as in llama.h)

@@ -100,21 +100,9 @@ option(LLAMA_SANITIZE_THREAD    "llama: enable thread sanitizer"    OFF)
 option(LLAMA_SANITIZE_ADDRESS   "llama: enable address sanitizer"   OFF)
 option(LLAMA_SANITIZE_UNDEFINED "llama: enable undefined sanitizer" OFF)
 
-# utils
-option(LLAMA_BUILD_COMMON "llama: build common utils library" ${LLAMA_STANDALONE})
-
-# extra artifacts
-option(LLAMA_BUILD_TESTS    "llama: build tests"          ${LLAMA_STANDALONE})
-option(LLAMA_BUILD_TOOLS    "llama: build tools"          ${LLAMA_STANDALONE})
-option(LLAMA_BUILD_EXAMPLES "llama: build examples"       ${LLAMA_STANDALONE})
-option(LLAMA_BUILD_SERVER   "llama: build server example" ${LLAMA_STANDALONE})
-option(LLAMA_BUILD_WEBUI    "llama: build the embedded Web UI for server"  ON)
+# qari ocr tool
+option(LLAMA_BUILD_QARI_OCR "llama: build only the Qari OCR tool" ON)
 option(LLAMA_TOOLS_INSTALL  "llama: install tools"        ${LLAMA_TOOLS_INSTALL_DEFAULT})
-option(LLAMA_TESTS_INSTALL  "llama: install tests"        ON)
-
-# 3rd party libs
-option(LLAMA_OPENSSL    "llama: use openssl to support HTTPS" ON)
-option(LLAMA_LLGUIDANCE "llama-common: include LLGuidance library for structured output in common utils" OFF)
 
 
 # Required for relocatable CMake package
@@ -192,27 +180,8 @@ endif()
 
 add_subdirectory(src)
 
-#
-# utils, programs, examples and tests
-#
-
-if (LLAMA_BUILD_COMMON)
-    add_subdirectory(common)
-    add_subdirectory(vendor/cpp-httplib)
-endif()
-
-if (LLAMA_BUILD_COMMON AND LLAMA_BUILD_TESTS AND NOT CMAKE_JS_VERSION)
-    include(CTest)
-    add_subdirectory(tests)
-endif()
-
-if (LLAMA_BUILD_COMMON AND LLAMA_BUILD_EXAMPLES)
-    add_subdirectory(examples)
-    add_subdirectory(pocs)
-endif()
-
-if (LLAMA_BUILD_COMMON AND LLAMA_BUILD_TOOLS)
-    add_subdirectory(tools)
+if (LLAMA_BUILD_QARI_OCR)
+    add_subdirectory(tools/mtmd)
 endif()
 
 # Automatically add all files from the 'licenses' directory
@@ -223,10 +192,6 @@ foreach(FILE_PATH ${EXTRA_LICENSES})
     string(REGEX REPLACE "^LICENSE-" "" NAME "${FILE_NAME}")
     license_add_file("${NAME}" "${FILE_PATH}")
 endforeach()
-
-if (LLAMA_BUILD_COMMON)
-    license_generate(common)
-endif()
 
 #
 # install
@@ -265,18 +230,6 @@ write_basic_package_version_file(
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/llama-config.cmake
               ${CMAKE_CURRENT_BINARY_DIR}/llama-version.cmake
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/llama)
-
-install(
-    FILES convert_hf_to_gguf.py
-    PERMISSIONS
-        OWNER_READ
-        OWNER_WRITE
-        OWNER_EXECUTE
-        GROUP_READ
-        GROUP_EXECUTE
-        WORLD_READ
-        WORLD_EXECUTE
-    DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 configure_file(cmake/llama.pc.in
         "${CMAKE_CURRENT_BINARY_DIR}/llama.pc"

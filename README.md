@@ -1,163 +1,73 @@
 # QK-llama.cpp
 
-This repository is a fork of `llama.cpp` focused on a practical pipeline for:
-
-- Converting Hugging Face multimodal models to GGUF
-- Generating matching `mmproj` files
-- Running OCR and multimodal inference locally on GPUs
-- Supporting AMD via Vulkan and NVIDIA via CUDA on Windows
-
-## Purpose
-
-Primary use case in this fork:
-
-- HF model -> GGUF text model
-- HF model -> GGUF mmproj
-- local inference with `llama-qari-ocr` (added in this fork)
-
-This is intended for Windows local inference workflows where AMD GPUs can be used through Vulkan.
-
-## Model Conversion (HF -> GGUF)
-
-Example for Qari OCR (Qwen2VL-based):
-
-```bash
-# text model GGUF
-python convert_hf_to_gguf.py NAMAA-Space/Qari-OCR-v0.3-VL-2B-Instruct \
-  --outfile qari-ocr-q8_0.gguf \
-  --outtype q8_0 \
-  --remote
-
-# multimodal projector GGUF (mmproj)
-python convert_hf_to_gguf.py NAMAA-Space/Qari-OCR-v0.3-VL-2B-Instruct \
-  --mmproj \
-  --outfile . \
-  --outtype f16 \
-  --remote
-```
-
-## Build
-
-### Windows 11 / AMD (Vulkan)
-
-```powershell
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-
-cmake --build build --config Release -j
-```
-
-### Windows / NVIDIA (CUDA)
-
-```powershell
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-
-cmake --build build --config Release -j
-```
-
-### Linux / WSL (Vulkan)
-
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-
-cmake --build build --config Release -j
-```
-
-## Dependencies
-
-For another project to use this fork for inference, you typically need only:
-
-- `llama-qari-ocr` executable
-- Text GGUF model file
-- Matching `mmproj` GGUF file
-- Backend runtime dependencies for your platform/GPU
-
-### Windows
----
-- `llama-qari-ocr.exe`
-- Model files: `*.gguf` (text) + `mmproj-*.gguf` (email the maintainer for access to these).
-
-#### AMD (Vulkan)
-
-- AMD GPU driver with Vulkan support
-- Vulkan runtime / ICD available on system
-
-#### NVIDIA (CUDA)
-
-- NVIDIA driver
-- CUDA runtime compatible with your build
-
-### Linux
----
-- `llama-qari-ocr` binary
-- Model files: `*.gguf` (text) + `mmproj-*.gguf` (email the maintainer for access to these).
-
-#### AMD (Vulkan)
-
-- AMD Vulkan-capable driver stack (Mesa/AMDGPU-PRO as applicable)
-- Vulkan loader/runtime (`libvulkan`)
-
-#### NVIDIA (CUDA or Vulkan)
-
-- NVIDIA driver
-- for CUDA builds: compatible CUDA runtime libraries
-- for Vulkan builds: Vulkan loader/runtime (`libvulkan`)
-
-## Inference (OCR)
-
-The OCR tool in this fork is:
+This fork is pruned around one executable:
 
 - `llama-qari-ocr`
 
-### Windows run example
+The retained build graph is `tools/mtmd/qari-ocr.cpp`, `libmtmd`, `libllama`,
+and `ggml` with CPU plus optional Vulkan backend support.
 
-```powershell
-.\build\bin\Release\llama-qari-ocr.exe \
-  -m ..\qari-ocr-q8_0.gguf \
-  --mmproj ..\mmproj-Qwen2-VL-2b-Instruct-F16.gguf \
-  -i document.jpg \
-  --prompt "Extract all text exactly." \
-  -n 2048 -ngl 99 \
-  --image-max-tokens 1024 \
-  --max-continue-rounds 8 \
-  -o ocr-output.txt
-```
+## Build With Vulkan
 
-### Linux run example
+Using the preset:
 
 ```bash
-./build/bin/llama-qari-ocr \
+cmake --preset qari-vulkan-release
+cmake --build --preset qari-vulkan-release
+```
+
+Equivalent explicit CMake commands:
+
+```bash
+cmake -S . -B build-qari-vulkan-release \
+  -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DGGML_VULKAN=ON \
+  -DGGML_OPENMP=OFF \
+  -DGGML_LLAMAFILE=OFF \
+  -DLLAMA_BUILD_QARI_OCR=ON
+
+cmake --build build-qari-vulkan-release --target llama-qari-ocr -j
+```
+
+The binary is written to:
+
+```text
+build-qari-vulkan-release/bin/llama-qari-ocr
+```
+
+On Windows with a multi-config generator, use the same CMake options and build
+the `llama-qari-ocr` target for `Release`.
+
+## Run
+
+```bash
+./build-qari-vulkan-release/bin/llama-qari-ocr \
   -m ../qari-ocr-q8_0.gguf \
-  --mmproj ../mmproj-Qwen2-VL-2b-Instruct-F16.gguf \
+  --mmproj ../qari-mmproj-f16.gguf \
   -i document.jpg \
   --prompt "Extract all text exactly." \
-  -n 2048 -ngl 99 \
+  -n 2048 \
+  -ngl 99 \
   --image-max-tokens 1024 \
   --max-continue-rounds 8 \
   -o ocr-output.txt
 ```
 
-## `llama-qari-ocr` flags
+For single-file multimodal models, omit `--mmproj` or set it to the same file as
+`-m`.
 
-- `-m, --model` text GGUF
-- `--mmproj` mmproj GGUF
-- `-i, --image` input image
-- `-p, --prompt` OCR instruction
-- `-n` max generation tokens
-- `-ngl` GPU layers for text model
-- `--image-min-tokens` min image tokens for mtmd
-- `--image-max-tokens` max image tokens for mtmd
-- `--max-continue-rounds` auto-continue rounds after early EOG
-- `-o, --output` save OCR output to file
+## Runtime Inputs
 
-## Notes
+You still need:
 
-- AMD acceleration works through Vulkan.
-- NVIDIA acceleration can use Vulkan or CUDA (CUDA is usually faster).
-- For multimodal models, text GGUF and mmproj GGUF must match the same model family/version.
+- a text GGUF model
+- a matching multimodal projector GGUF, unless using a single-file model
+- image input files
+- a Vulkan-capable driver/runtime when building with `GGML_VULKAN=ON`
 
 ## Licensing
 
-- Upstream llama.cpp code in this fork remains under the original MIT license.
-- Qari OCR fork-specific additions are scoped in `NOTICE-QARI-OCR.md`.
-- Commercial (paid) licensing terms for those additions are in
-  `LICENSE-QARI-OCR-COMMERCIAL.md`.
+Upstream llama.cpp and ggml code remain under their original MIT license.
+Qari OCR fork-specific additions are described in `NOTICE-QARI-OCR.md`, with
+commercial terms in `LICENSE-QARI-OCR-COMMERCIAL.md`.

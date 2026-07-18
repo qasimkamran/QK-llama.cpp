@@ -6,6 +6,7 @@
 #include "mtmd-helper.h"
 #include "qari-loader.h"
 #include "qari-output.h"
+#include "qari-report.h"
 #include "qari-types.h"
 
 #include <chrono>
@@ -38,26 +39,6 @@ static bool TokenToPiece(const llama_vocab * vocab, llama_token tok, std::string
 }
 
 } // namespace
-
-namespace qari {
-
-static void PrintUsage(const char * prog) {
-    fprintf(stderr,
-        "Usage:\n"
-        "  %s -m <text-model.gguf> (-i <image> | --image-dir <dir>) [--mmproj <mmproj.gguf>] [--prompt <text>] [-n <predict>] [-ngl <layers>] [--image-min-tokens <n>] [--image-max-tokens <n>] [--max-continue-rounds <n>] [-o <output.txt> | --output-dir <dir>]\n\n"
-        "Example:\n"
-        "  %s -m ../qari-ocr-q8_0.gguf --mmproj ../qari-mmproj-f16.gguf -i document.jpg --prompt \"Extract all text exactly.\" -n 512 -ngl 99\n"
-        "  %s -m ../qari-ocr-q8_0.gguf --mmproj ../qari-mmproj-f16.gguf --image-dir ./docs --prompt \"Extract all text exactly.\" -n 512 -ngl 99\n"
-        "\n"
-        "Notes:\n"
-        "  - For single-file multimodal models, set --mmproj to the same file as -m.\n"
-        "  - Use either -i/--image or --image-dir (not both).\n"
-        "  - Use either -o/--output or --output-dir (not both).\n"
-        "  - Use -ngl based on your VRAM (99 tries to offload as much as possible).\n",
-        prog, prog, prog);
-}
-
-} // namespace qari
 
 using SteadyClock = std::chrono::steady_clock;
 
@@ -127,16 +108,7 @@ static int QariOcrMain(int argc, char ** argv) {
     for (size_t imageIdx = 0; imageIdx < imagePaths.size(); ++imageIdx) {
         const std::string & currentImagePath = imagePaths[imageIdx];
 
-        fprintf(
-            stderr,
-            "\n"
-            "============================================================\n"
-            "[OCR TIMING] image %zu/%zu: %s\n"
-            "============================================================\n",
-            imageIdx + 1,
-            imagePaths.size(),
-            currentImagePath.c_str()
-        );
+        qari::PrintImageHeader(imageIdx, imagePaths.size(), currentImagePath);
 
         const auto imageTotalStart = SteadyClock::now();
 
@@ -148,7 +120,7 @@ static int QariOcrMain(int argc, char ** argv) {
         // 1. Load and decode the image file
         // ------------------------------------------------------------
 
-        fprintf(stderr, "[OCR PHASE] Loading image\n");
+        qari::PrintPhase("Loading image");
         const auto bitmapStart = SteadyClock::now();
 
         mtmd_bitmap * bitmap =
@@ -170,11 +142,7 @@ static int QariOcrMain(int argc, char ** argv) {
             return 1;
         }
 
-        fprintf(
-            stderr,
-            "[OCR TIMING] Image loading: %.2f ms\n",
-            ElapsedMs(bitmapStart, bitmapEnd)
-        );
+        qari::PrintTiming("Image loading", ElapsedMs(bitmapStart, bitmapEnd));
 
         const mtmd_bitmap * bitmaps[] = { bitmap };
 
@@ -213,10 +181,7 @@ static int QariOcrMain(int argc, char ** argv) {
         // 2. Multimodal tokenisation and image preprocessing
         // ------------------------------------------------------------
 
-        fprintf(
-            stderr,
-            "[OCR PHASE] Tokenising and preprocessing multimodal input\n"
-        );
+        qari::PrintPhase("Tokenising and preprocessing multimodal input");
 
         const auto tokenizeStart = SteadyClock::now();
 
@@ -225,9 +190,8 @@ static int QariOcrMain(int argc, char ** argv) {
 
         const auto tokenizeEnd = SteadyClock::now();
 
-        fprintf(
-            stderr,
-            "[OCR TIMING] Multimodal tokenisation/preprocessing: %.2f ms\n",
+        qari::PrintTiming(
+            "Multimodal tokenisation/preprocessing",
             ElapsedMs(tokenizeStart, tokenizeEnd)
         );
 
@@ -250,10 +214,7 @@ static int QariOcrMain(int argc, char ** argv) {
         // into "image slice encoded" and "image decoded".
         // ------------------------------------------------------------
 
-        fprintf(
-            stderr,
-            "[OCR PHASE] Evaluating vision input and image-token prefill\n"
-        );
+        qari::PrintPhase("Evaluating vision input and image-token prefill");
 
         llama_pos nPast = 0;
 
@@ -272,17 +233,11 @@ static int QariOcrMain(int argc, char ** argv) {
 
         const auto multimodalEvalEnd = SteadyClock::now();
 
-        fprintf(
-            stderr,
-            "[OCR TIMING] Vision encoding + image prefill: %.2f ms\n",
+        qari::PrintTiming(
+            "Vision encoding + image prefill",
             ElapsedMs(multimodalEvalStart, multimodalEvalEnd)
         );
-
-        fprintf(
-            stderr,
-            "[OCR INFO] Context tokens after image prefill: %d\n",
-            static_cast<int>(nPast)
-        );
+        qari::PrintContextTokenCount(static_cast<int>(nPast));
 
         if (evalResult != 0) {
             fprintf(
@@ -317,7 +272,7 @@ static int QariOcrMain(int argc, char ** argv) {
             );
         }
 
-        fprintf(stderr, "[OCR PHASE] Generating output tokens\n");
+        qari::PrintPhase("Generating output tokens");
 
         const auto generationStart = SteadyClock::now();
 
@@ -495,11 +450,7 @@ static int QariOcrMain(int argc, char ** argv) {
                 break;
             }
 
-            fprintf(
-                stderr,
-                "\n[OCR PHASE] Evaluating continuation prompt %d\n",
-                continueRound + 1
-            );
+            qari::PrintContinuationPhase(continueRound + 1);
 
             const auto continuationStart = SteadyClock::now();
 
@@ -522,12 +473,7 @@ static int QariOcrMain(int argc, char ** argv) {
 
             continuationTotalMs += currentContinuationMs;
 
-            fprintf(
-                stderr,
-                "[OCR TIMING] Continuation prompt %d: %.2f ms\n",
-                continueRound + 1,
-                currentContinuationMs
-            );
+            qari::PrintContinuationTiming(continueRound + 1, currentContinuationMs);
 
             if (continuationResult != 0) {
                 fprintf(
@@ -578,36 +524,20 @@ static int QariOcrMain(int argc, char ** argv) {
                     continuationTotalMs
             );
 
-        fprintf(
-            stderr,
-            "\n"
-            "---------------- GENERATION REPORT ----------------\n"
-            "[OCR TIMING] Generated tokens:              %d\n"
-            "[OCR TIMING] Generation wall time:          %.2f ms\n"
-            "[OCR TIMING] Generation speed:              %.2f tokens/s\n"
-            "[OCR TIMING] llama_decode calls:            %d\n"
-            "[OCR TIMING] Total llama_decode time:       %.2f ms\n"
-            "[OCR TIMING] Average llama_decode time:     %.2f ms\n"
-            "[OCR TIMING] Minimum llama_decode time:     %.2f ms\n"
-            "[OCR TIMING] Maximum llama_decode time:     %.2f ms\n"
-            "[OCR TIMING] Sampling time:                 %.2f ms\n"
-            "[OCR TIMING] Console output/flush time:     %.2f ms\n"
-            "[OCR TIMING] Continuation evaluation time:  %.2f ms\n"
-            "[OCR TIMING] Other generation time:        %.2f ms\n"
-            "-----------------------------------------------------\n",
-            generatedTotal,
-            generationTotalMs,
-            tokensPerSecond,
-            decodeCallCount,
-            decodeTotalMs,
-            averageDecodeMs,
-            minimumDecodeMs,
-            maximumDecodeMs,
-            samplingTotalMs,
-            consoleOutputTotalMs,
-            continuationTotalMs,
-            measuredNonDecodeMs
-        );
+        qari::GenerationReport generationReport;
+        generationReport.generatedTokens = generatedTotal;
+        generationReport.decodeCallCount = decodeCallCount;
+        generationReport.generationTotalMs = generationTotalMs;
+        generationReport.decodeTotalMs = decodeTotalMs;
+        generationReport.averageDecodeMs = averageDecodeMs;
+        generationReport.minimumDecodeMs = minimumDecodeMs;
+        generationReport.maximumDecodeMs = maximumDecodeMs;
+        generationReport.samplingTotalMs = samplingTotalMs;
+        generationReport.consoleOutputTotalMs = consoleOutputTotalMs;
+        generationReport.continuationTotalMs = continuationTotalMs;
+        generationReport.measuredNonDecodeMs = measuredNonDecodeMs;
+        generationReport.tokensPerSecond = tokensPerSecond;
+        qari::PrintGenerationReport(generationReport);
 
         // Print llama.cpp's own internal performance counters.
         fprintf(
@@ -636,28 +566,16 @@ static int QariOcrMain(int argc, char ** argv) {
         const auto outputSaveEnd = SteadyClock::now();
         const auto imageTotalEnd = SteadyClock::now();
 
-        fprintf(
-            stderr,
-            "\n"
-            "================== IMAGE SUMMARY ==================\n"
-            "[OCR SUMMARY] Image loading:               %.2f ms\n"
-            "[OCR SUMMARY] Tokenisation/preprocessing:  %.2f ms\n"
-            "[OCR SUMMARY] Vision + image prefill:      %.2f ms\n"
-            "[OCR SUMMARY] Text generation:             %.2f ms\n"
-            "[OCR SUMMARY] Output saving:               %.2f ms\n"
-            "[OCR SUMMARY] Total image processing:      %.2f ms\n"
-            "[OCR SUMMARY] Output tokens:               %d\n"
-            "[OCR SUMMARY] Context tokens at end:       %d\n"
-            "=====================================================\n",
-            ElapsedMs(bitmapStart, bitmapEnd),
-            ElapsedMs(tokenizeStart, tokenizeEnd),
-            ElapsedMs(multimodalEvalStart, multimodalEvalEnd),
-            generationTotalMs,
-            ElapsedMs(outputSaveStart, outputSaveEnd),
-            ElapsedMs(imageTotalStart, imageTotalEnd),
-            generatedTotal,
-            static_cast<int>(nPast)
-        );
+        qari::ImageSummary imageSummary;
+        imageSummary.imageLoadMs = ElapsedMs(bitmapStart, bitmapEnd);
+        imageSummary.tokenizationMs = ElapsedMs(tokenizeStart, tokenizeEnd);
+        imageSummary.multimodalEvalMs = ElapsedMs(multimodalEvalStart, multimodalEvalEnd);
+        imageSummary.generationMs = generationTotalMs;
+        imageSummary.outputSaveMs = ElapsedMs(outputSaveStart, outputSaveEnd);
+        imageSummary.totalImageMs = ElapsedMs(imageTotalStart, imageTotalEnd);
+        imageSummary.outputTokens = generatedTotal;
+        imageSummary.contextTokens = static_cast<int>(nPast);
+        qari::PrintImageSummary(imageSummary);
 
         mtmd_input_chunks_free(chunks);
         mtmd_bitmap_free(bitmap);

@@ -4,19 +4,17 @@
 #include "llama.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
+#include "qari-loader.h"
+#include "qari-types.h"
 
-#include <algorithm>
+#include <chrono>
 #include <clocale>
-#include <cctype>
 #include <cstdio>
-#include <cstring>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
-#include <limits>
-#include <chrono>
-#include <thread>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -27,13 +25,29 @@
 #include <shellapi.h>
 #endif
 
-static void print_usage(const char * prog) {
+namespace {
+
+static bool TokenToPiece(const llama_vocab * vocab, llama_token tok, std::string & outputPiece) {
+    char tokenBuffer[256];
+    const int pieceLength = llama_token_to_piece(vocab, tok, tokenBuffer, sizeof(tokenBuffer), 0, true);
+    if (pieceLength < 0) {
+        return false;
+    }
+    outputPiece.assign(tokenBuffer, pieceLength);
+    return true;
+}
+
+} // namespace
+
+namespace qari {
+
+static void PrintUsage(const char * prog) {
     fprintf(stderr,
         "Usage:\n"
-        "  %s -m <text-model.gguf> (-i <image> | --image-dir <dir>) [--mmproj <mmproj.gguf>] [--prompt <text>] [-n <predict>] [-ngl <layers>] [--image-min-tokens <n>] [--image-max-tokens <n>] [--max-continue-rounds <n>] [-o <output.txt> | --output-dir <dir>]\\n\\n"
+        "  %s -m <text-model.gguf> (-i <image> | --image-dir <dir>) [--mmproj <mmproj.gguf>] [--prompt <text>] [-n <predict>] [-ngl <layers>] [--image-min-tokens <n>] [--image-max-tokens <n>] [--max-continue-rounds <n>] [-o <output.txt> | --output-dir <dir>]\n\n"
         "Example:\n"
-        "  %s -m ../qari-ocr-q8_0.gguf --mmproj ../qari-mmproj-f16.gguf -i document.jpg --prompt \"Extract all text exactly.\" -n 512 -ngl 99\\n"
-        "  %s -m ../qari-ocr-q8_0.gguf --mmproj ../qari-mmproj-f16.gguf --image-dir ./docs --prompt \"Extract all text exactly.\" -n 512 -ngl 99\\n"
+        "  %s -m ../qari-ocr-q8_0.gguf --mmproj ../qari-mmproj-f16.gguf -i document.jpg --prompt \"Extract all text exactly.\" -n 512 -ngl 99\n"
+        "  %s -m ../qari-ocr-q8_0.gguf --mmproj ../qari-mmproj-f16.gguf --image-dir ./docs --prompt \"Extract all text exactly.\" -n 512 -ngl 99\n"
         "\n"
         "Notes:\n"
         "  - For single-file multimodal models, set --mmproj to the same file as -m.\n"
@@ -43,29 +57,11 @@ static void print_usage(const char * prog) {
         prog, prog, prog);
 }
 
-static bool token_to_piece(const llama_vocab * vocab, llama_token tok, std::string & out) {
-    char buf[256];
-    const int n = llama_token_to_piece(vocab, tok, buf, sizeof(buf), 0, true);
-    if (n < 0) {
-        return false;
-    }
-    out.assign(buf, n);
-    return true;
-}
-
-static bool has_supported_image_ext(const std::string & path) {
-    std::filesystem::path p(path);
-    std::string ext = p.extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
-        return (char) std::tolower(c);
-    });
-
-    return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".webp" || ext == ".tif" || ext == ".tiff";
-}
+} // namespace qari
 
 using SteadyClock = std::chrono::steady_clock;
 
-static double elapsed_ms(
+static double ElapsedMs(
     const SteadyClock::time_point & start,
     const SteadyClock::time_point & end
 ) {
@@ -74,175 +70,62 @@ static double elapsed_ms(
     ).count();
 }
 
-static int qari_ocr_main(int argc, char ** argv) {
+static int QariOcrMain(int argc, char ** argv) {
     std::setlocale(LC_NUMERIC, "C");
 
-    std::string model_path;
-    std::string mmproj_path;
-    std::string image_path;
-    std::string image_dir_path;
-    std::string output_path;
-    std::string output_dir_path;
-    std::string prompt = "Extract all text from this image. Return plain text only.";
-    int n_predict = 512;
-    int n_gpu_layers = 99;
-    int image_min_tokens = 256;
-    int image_max_tokens = 1024;
-    int max_continue_rounds = 4;
-
-    for (int i = 1; i < argc; ++i) {
-        if ((strcmp(argv[i], "-m") == 0 || strcmp(argv[i], "--model") == 0) && i + 1 < argc) {
-            model_path = argv[++i];
-        } else if (strcmp(argv[i], "--mmproj") == 0 && i + 1 < argc) {
-            mmproj_path = argv[++i];
-        } else if ((strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--image") == 0) && i + 1 < argc) {
-            image_path = argv[++i];
-        } else if (strcmp(argv[i], "--image-dir") == 0 && i + 1 < argc) {
-            image_dir_path = argv[++i];
-        } else if ((strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--prompt") == 0) && i + 1 < argc) {
-            prompt = argv[++i];
-        } else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
-            n_predict = std::stoi(argv[++i]);
-        } else if (strcmp(argv[i], "-ngl") == 0 && i + 1 < argc) {
-            n_gpu_layers = std::stoi(argv[++i]);
-        } else if (strcmp(argv[i], "--image-min-tokens") == 0 && i + 1 < argc) {
-            image_min_tokens = std::stoi(argv[++i]);
-        } else if (strcmp(argv[i], "--image-max-tokens") == 0 && i + 1 < argc) {
-            image_max_tokens = std::stoi(argv[++i]);
-        } else if (strcmp(argv[i], "--max-continue-rounds") == 0 && i + 1 < argc) {
-            max_continue_rounds = std::stoi(argv[++i]);
-        } else if ((strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--output") == 0) && i + 1 < argc) {
-            output_path = argv[++i];
-        } else if (strcmp(argv[i], "--output-dir") == 0 && i + 1 < argc) {
-            output_dir_path = argv[++i];
-        } else {
-            print_usage(argv[0]);
-            return 1;
-        }
-    }
-
-    if (model_path.empty()) {
-        print_usage(argv[0]);
+    qari::Options options = qari::ParseOptions(argc, argv);
+    if (!qari::OptionsValid(options)) {
+        qari::PrintUsage(argv[0]);
         return 1;
     }
 
-    const bool has_single_image = !image_path.empty();
-    const bool has_image_dir = !image_dir_path.empty();
-    if (has_single_image == has_image_dir) {
-        fprintf(stderr, "error: provide exactly one of -i/--image or --image-dir\n");
-        print_usage(argv[0]);
+    if (options.mmprojPath.empty()) {
+        options.mmprojPath = options.modelPath;
+    }
+
+    const std::vector<std::string> imagePaths = qari::CollectImagePaths(options);
+    if (imagePaths.empty()) {
         return 1;
     }
 
-    const bool has_output_file = !output_path.empty();
-    const bool has_output_dir = !output_dir_path.empty();
-    if (has_output_file && has_output_dir) {
-        fprintf(stderr, "error: provide only one of -o/--output or --output-dir\n");
-        print_usage(argv[0]);
+    if (!qari::LoadGGMLBackend()) {
+        fprintf(stderr, "error: failed to load ggml backend\n");
         return 1;
     }
 
-    if (mmproj_path.empty()) {
-        mmproj_path = model_path;
-    }
+    qari::LanguageModelOptions languageModelOptions;
+    languageModelOptions.modelPath = options.modelPath;
+    languageModelOptions.nGPULayers = options.nGpuLayers;
 
-    std::vector<std::string> image_paths;
-    if (has_single_image) {
-        image_paths.push_back(image_path);
-    } else {
-        std::error_code ec;
-        std::filesystem::path dir_path(image_dir_path);
-        if (!std::filesystem::is_directory(dir_path, ec)) {
-            fprintf(stderr, "error: not a readable directory: %s\n", image_dir_path.c_str());
-            return 1;
-        }
-
-        for (const auto & entry : std::filesystem::directory_iterator(dir_path, ec)) {
-            if (ec) {
-                break;
-            }
-            if (!entry.is_regular_file()) {
-                continue;
-            }
-            const std::string cur = entry.path().string();
-            if (has_supported_image_ext(cur)) {
-                image_paths.push_back(cur);
-            }
-        }
-        if (ec) {
-            fprintf(stderr, "error: failed to iterate directory: %s\n", image_dir_path.c_str());
-            return 1;
-        }
-
-        std::sort(image_paths.begin(), image_paths.end());
-        if (image_paths.empty()) {
-            fprintf(stderr, "error: no supported image files found in directory: %s\n", image_dir_path.c_str());
-            return 1;
-        }
-    }
-
-    if (has_output_dir) {
-        std::error_code ec;
-        std::filesystem::path out_dir(output_dir_path);
-        if (!std::filesystem::is_directory(out_dir, ec)) {
-            fprintf(stderr, "error: --output-dir is not a readable directory: %s\n", output_dir_path.c_str());
-            return 1;
-        }
-    }
-
-    ggml_backend_load_all();
-
-    llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = n_gpu_layers;
-
-    llama_model * model = llama_model_load_from_file(model_path.c_str(), model_params);
-    if (!model) {
-        fprintf(stderr, "error: failed to load text model: %s\n", model_path.c_str());
+    llama_model * llamaModel = qari::LoadLanguageModel(options.modelPath, languageModelOptions);
+    if (!llamaModel) {
         return 1;
     }
 
-    llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_ctx = 8192;
-    ctx_params.n_batch = 1024;
-    ctx_params.n_ubatch = 256;
-    ctx_params.no_perf = false;
-
-    llama_context * ctx = llama_init_from_model(model, ctx_params);
-    if (!ctx) {
-        fprintf(stderr, "error: failed to create llama context\n");
-        llama_model_free(model);
+    llama_context * llamaCtx = qari::CreateLanguageModelContext(llamaModel, languageModelOptions);
+    if (!llamaCtx) {
+        llama_model_free(llamaModel);
         return 1;
     }
 
-    mtmd_context_params mparams = mtmd_context_params_default();
-    mparams.use_gpu = true;
-    mparams.print_timings = true;
-    mparams.n_threads = (int) std::max(1u, std::thread::hardware_concurrency());
-    mparams.image_min_tokens = image_min_tokens;
-    mparams.image_max_tokens = image_max_tokens;
+    qari::VisionModelOptions visionModelOptions;
+    visionModelOptions.modelPath = options.mmprojPath;
+    visionModelOptions.imageMinTokens = options.imageMinTokens;
+    visionModelOptions.imageMaxTokens = options.imageMaxTokens;
 
-    mtmd_context * mctx = mtmd_init_from_file(mmproj_path.c_str(), model, mparams);
-    if (!mctx) {
-        fprintf(stderr, "error: failed to load multimodal projector/model: %s\n", mmproj_path.c_str());
-        llama_free(ctx);
-        llama_model_free(model);
+    mtmd_context * mtmdCtx = qari::LoadMultimodalContext(options.mmprojPath, llamaModel, visionModelOptions);
+    if (!mtmdCtx) {
+        llama_free(llamaCtx);
+        llama_model_free(llamaModel);
         return 1;
     }
 
-    if (!mtmd_support_vision(mctx)) {
-        fprintf(stderr, "error: loaded multimodal context does not support vision input\n");
-        mtmd_free(mctx);
-        llama_free(ctx);
-        llama_model_free(model);
-        return 1;
-    }
-
-    const llama_vocab * vocab = llama_model_get_vocab(model);
-    auto sparams = llama_sampler_chain_default_params();
-    llama_sampler * sampler = llama_sampler_chain_init(sparams);
+    const llama_vocab * vocab = llama_model_get_vocab(llamaModel);
+    auto samplerParams = llama_sampler_chain_default_params();
+    llama_sampler * sampler = llama_sampler_chain_init(samplerParams);
     llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
-    for (size_t image_idx = 0; image_idx < image_paths.size(); ++image_idx) {
-        const std::string & current_image_path = image_paths[image_idx];
+    for (size_t imageIdx = 0; imageIdx < imagePaths.size(); ++imageIdx) {
+        const std::string & currentImagePath = imagePaths[imageIdx];
 
         fprintf(
             stderr,
@@ -250,62 +133,62 @@ static int qari_ocr_main(int argc, char ** argv) {
             "============================================================\n"
             "[OCR TIMING] image %zu/%zu: %s\n"
             "============================================================\n",
-            image_idx + 1,
-            image_paths.size(),
-            current_image_path.c_str()
+            imageIdx + 1,
+            imagePaths.size(),
+            currentImagePath.c_str()
         );
 
-        const auto image_total_start = SteadyClock::now();
+        const auto imageTotalStart = SteadyClock::now();
 
-        llama_memory_clear(llama_get_memory(ctx), true);
+        llama_memory_clear(llama_get_memory(llamaCtx), true);
         llama_sampler_reset(sampler);
-        llama_perf_context_reset(ctx);
+        llama_perf_context_reset(llamaCtx);
 
         // ------------------------------------------------------------
         // 1. Load and decode the image file
         // ------------------------------------------------------------
 
         fprintf(stderr, "[OCR PHASE] Loading image\n");
-        const auto bitmap_start = SteadyClock::now();
+        const auto bitmapStart = SteadyClock::now();
 
-        mtmd_bitmap * bmp =
-            mtmd_helper_bitmap_init_from_file(mctx, current_image_path.c_str());
+        mtmd_bitmap * bitmap =
+            mtmd_helper_bitmap_init_from_file(mtmdCtx, currentImagePath.c_str());
 
-        const auto bitmap_end = SteadyClock::now();
+        const auto bitmapEnd = SteadyClock::now();
 
-        if (!bmp) {
+        if (!bitmap) {
             fprintf(
                 stderr,
                 "error: failed to load image: %s\n",
-                current_image_path.c_str()
+                currentImagePath.c_str()
             );
 
             llama_sampler_free(sampler);
-            mtmd_free(mctx);
-            llama_free(ctx);
-            llama_model_free(model);
+            mtmd_free(mtmdCtx);
+            llama_free(llamaCtx);
+            llama_model_free(llamaModel);
             return 1;
         }
 
         fprintf(
             stderr,
             "[OCR TIMING] Image loading: %.2f ms\n",
-            elapsed_ms(bitmap_start, bitmap_end)
+            ElapsedMs(bitmapStart, bitmapEnd)
         );
 
-        const mtmd_bitmap * bitmaps[] = { bmp };
+        const mtmd_bitmap * bitmaps[] = { bitmap };
 
-        const std::string user_content =
-            std::string(mtmd_default_marker()) + "\n" + prompt;
+        const std::string userContent =
+            std::string(mtmd_default_marker()) + "\n" + options.prompt;
 
-        const std::string full_prompt =
+        const std::string fullPrompt =
             "<|im_start|>user\n" +
-            user_content +
+            userContent +
             "<|im_end|>\n"
             "<|im_start|>assistant\n";
 
-        mtmd_input_text in_txt = {
-            full_prompt.c_str(),
+        mtmd_input_text inputText = {
+            fullPrompt.c_str(),
             true,
             true,
         };
@@ -318,11 +201,11 @@ static int qari_ocr_main(int argc, char ** argv) {
                 "error: failed to allocate mtmd_input_chunks\n"
             );
 
-            mtmd_bitmap_free(bmp);
+            mtmd_bitmap_free(bitmap);
             llama_sampler_free(sampler);
-            mtmd_free(mctx);
-            llama_free(ctx);
-            llama_model_free(model);
+            mtmd_free(mtmdCtx);
+            llama_free(llamaCtx);
+            llama_model_free(llamaModel);
             return 1;
         }
 
@@ -335,28 +218,28 @@ static int qari_ocr_main(int argc, char ** argv) {
             "[OCR PHASE] Tokenising and preprocessing multimodal input\n"
         );
 
-        const auto tokenize_start = SteadyClock::now();
+        const auto tokenizeStart = SteadyClock::now();
 
-        const int tokenize_result =
-            mtmd_tokenize(mctx, chunks, &in_txt, bitmaps, 1);
+        const int tokenizeResult =
+            mtmd_tokenize(mtmdCtx, chunks, &inputText, bitmaps, 1);
 
-        const auto tokenize_end = SteadyClock::now();
+        const auto tokenizeEnd = SteadyClock::now();
 
         fprintf(
             stderr,
             "[OCR TIMING] Multimodal tokenisation/preprocessing: %.2f ms\n",
-            elapsed_ms(tokenize_start, tokenize_end)
+            ElapsedMs(tokenizeStart, tokenizeEnd)
         );
 
-        if (tokenize_result != 0) {
+        if (tokenizeResult != 0) {
             fprintf(stderr, "error: mtmd_tokenize() failed\n");
 
             mtmd_input_chunks_free(chunks);
-            mtmd_bitmap_free(bmp);
+            mtmd_bitmap_free(bitmap);
             llama_sampler_free(sampler);
-            mtmd_free(mctx);
-            llama_free(ctx);
-            llama_model_free(model);
+            mtmd_free(mtmdCtx);
+            llama_free(llamaCtx);
+            llama_model_free(llamaModel);
             return 1;
         }
 
@@ -372,47 +255,47 @@ static int qari_ocr_main(int argc, char ** argv) {
             "[OCR PHASE] Evaluating vision input and image-token prefill\n"
         );
 
-        llama_pos n_past = 0;
+        llama_pos nPast = 0;
 
-        const auto multimodal_eval_start = SteadyClock::now();
+        const auto multimodalEvalStart = SteadyClock::now();
 
-        const int eval_result = mtmd_helper_eval_chunks(
-            mctx,
-            ctx,
+        const int evalResult = mtmd_helper_eval_chunks(
+            mtmdCtx,
+            llamaCtx,
             chunks,
-            n_past,
+            nPast,
             0,
-            ctx_params.n_batch,
+            languageModelOptions.nBatch,
             true,
-            &n_past
+            &nPast
         );
 
-        const auto multimodal_eval_end = SteadyClock::now();
+        const auto multimodalEvalEnd = SteadyClock::now();
 
         fprintf(
             stderr,
             "[OCR TIMING] Vision encoding + image prefill: %.2f ms\n",
-            elapsed_ms(multimodal_eval_start, multimodal_eval_end)
+            ElapsedMs(multimodalEvalStart, multimodalEvalEnd)
         );
 
         fprintf(
             stderr,
             "[OCR INFO] Context tokens after image prefill: %d\n",
-            static_cast<int>(n_past)
+            static_cast<int>(nPast)
         );
 
-        if (eval_result != 0) {
+        if (evalResult != 0) {
             fprintf(
                 stderr,
                 "error: mtmd_helper_eval_chunks() failed\n"
             );
 
             mtmd_input_chunks_free(chunks);
-            mtmd_bitmap_free(bmp);
+            mtmd_bitmap_free(bitmap);
             llama_sampler_free(sampler);
-            mtmd_free(mctx);
-            llama_free(ctx);
-            llama_model_free(model);
+            mtmd_free(mtmdCtx);
+            llama_free(llamaCtx);
+            llama_model_free(llamaModel);
             return 1;
         }
 
@@ -420,102 +303,102 @@ static int qari_ocr_main(int argc, char ** argv) {
         // 4. Autoregressive text generation
         // ------------------------------------------------------------
 
-        std::string output_text;
+        std::string outputText;
 
         printf("\n");
 
-        if (image_paths.size() > 1) {
+        if (imagePaths.size() > 1) {
             fprintf(
                 stderr,
                 "[%zu/%zu] OCR: %s\n",
-                image_idx + 1,
-                image_paths.size(),
-                current_image_path.c_str()
+                imageIdx + 1,
+                imagePaths.size(),
+                currentImagePath.c_str()
             );
         }
 
         fprintf(stderr, "[OCR PHASE] Generating output tokens\n");
 
-        const auto generation_start = SteadyClock::now();
+        const auto generationStart = SteadyClock::now();
 
-        double sampling_total_ms = 0.0;
-        double decode_total_ms = 0.0;
-        double console_output_total_ms = 0.0;
-        double continuation_total_ms = 0.0;
+        double samplingTotalMs = 0.0;
+        double decodeTotalMs = 0.0;
+        double consoleOutputTotalMs = 0.0;
+        double continuationTotalMs = 0.0;
 
-        double minimum_decode_ms =
+        double minimumDecodeMs =
             std::numeric_limits<double>::max();
 
-        double maximum_decode_ms = 0.0;
+        double maximumDecodeMs = 0.0;
 
-        int decode_call_count = 0;
-        int generated_total = 0;
-        int continue_round = 0;
+        int decodeCallCount = 0;
+        int generatedTotal = 0;
+        int continueRound = 0;
 
-        while (generated_total < n_predict) {
-            bool hit_eog = false;
-            int generated_this_round = 0;
+        while (generatedTotal < options.nPredict) {
+            bool hitEog = false;
+            int generatedThisRound = 0;
 
-            for (; generated_total < n_predict; ++generated_total) {
+            for (; generatedTotal < options.nPredict; ++generatedTotal) {
                 // Measure sampling independently from inference.
-                const double target_gpu_duty = 0.60;
+                const double targetGpuDuty = 0.60;
 
-                const auto sample_start = SteadyClock::now();
+                const auto sampleStart = SteadyClock::now();
 
                 llama_token tok =
-                    llama_sampler_sample(sampler, ctx, -1);
+                    llama_sampler_sample(sampler, llamaCtx, -1);
 
-                const auto sample_end = SteadyClock::now();
+                const auto sampleEnd = SteadyClock::now();
 
-                const double sample_ms =
-                    elapsed_ms(sample_start, sample_end);
+                const double sampleMs =
+                    ElapsedMs(sampleStart, sampleEnd);
 
-                sampling_total_ms += sample_ms;
+                samplingTotalMs += sampleMs;
 
-                if (target_gpu_duty > 0.0 && target_gpu_duty < 1.0) {
-                    const double required_idle_ms =
-                        sample_ms *
-                        ((1.0 / target_gpu_duty) - 1.0);
+                if (targetGpuDuty > 0.0 && targetGpuDuty < 1.0) {
+                    const double requiredIdleMs =
+                        sampleMs *
+                        ((1.0 / targetGpuDuty) - 1.0);
 
                     std::this_thread::sleep_for(
                         std::chrono::duration<double, std::milli>(
-                            required_idle_ms
+                            requiredIdleMs
                         )
                     );
                 }
 
                 if (llama_vocab_is_eog(vocab, tok)) {
-                    hit_eog = true;
+                    hitEog = true;
                     break;
                 }
 
                 std::string piece;
 
-                if (!token_to_piece(vocab, tok, piece)) {
+                if (!TokenToPiece(vocab, tok, piece)) {
                     fprintf(
                         stderr,
-                        "\nerror: token_to_piece failed\n"
+                        "\nerror: TokenToPiece failed\n"
                     );
 
-                    hit_eog = false;
-                    generated_total = n_predict;
+                    hitEog = false;
+                    generatedTotal = options.nPredict;
                     break;
                 }
 
                 // Console flushing can be surprisingly expensive on Windows,
                 // so measure it separately.
-                const auto console_start = SteadyClock::now();
+                const auto consoleStart = SteadyClock::now();
 
                 printf("%s", piece.c_str());
                 fflush(stdout);
 
-                const auto console_end = SteadyClock::now();
+                const auto consoleEnd = SteadyClock::now();
 
-                console_output_total_ms +=
-                    elapsed_ms(console_start, console_end);
+                consoleOutputTotalMs +=
+                    ElapsedMs(consoleStart, consoleEnd);
 
-                output_text += piece;
-                ++generated_this_round;
+                outputText += piece;
+                ++generatedThisRound;
 
                 llama_sampler_accept(sampler, tok);
 
@@ -523,52 +406,52 @@ static int qari_ocr_main(int argc, char ** argv) {
                     llama_batch_get_one(&tok, 1);
 
                 // This is the GPU-heavy operation during token generation.
-                const auto decode_start = SteadyClock::now();
+                const auto decodeStart = SteadyClock::now();
 
-                const int decode_result =
-                    llama_decode(ctx, batch);
+                const int decodeResult =
+                    llama_decode(llamaCtx, batch);
 
-                const auto decode_end = SteadyClock::now();
+                const auto decodeEnd = SteadyClock::now();
 
-                const double current_decode_ms =
-                    elapsed_ms(decode_start, decode_end);
+                const double currentDecodeMs =
+                    ElapsedMs(decodeStart, decodeEnd);
 
-                decode_total_ms += current_decode_ms;
+                decodeTotalMs += currentDecodeMs;
 
-                minimum_decode_ms =
-                    std::min(minimum_decode_ms, current_decode_ms);
+                minimumDecodeMs =
+                    std::min(minimumDecodeMs, currentDecodeMs);
 
-                maximum_decode_ms =
-                    std::max(maximum_decode_ms, current_decode_ms);
+                maximumDecodeMs =
+                    std::max(maximumDecodeMs, currentDecodeMs);
 
-                ++decode_call_count;
+                ++decodeCallCount;
 
-                if (decode_result != 0) {
+                if (decodeResult != 0) {
                     fprintf(
                         stderr,
                         "\nerror: llama_decode failed while generating\n"
                     );
 
-                    hit_eog = false;
-                    generated_total = n_predict;
+                    hitEog = false;
+                    generatedTotal = options.nPredict;
                     break;
                 }
 
-                ++n_past;
+                ++nPast;
             }
 
-            if (!hit_eog || generated_total >= n_predict) {
+            if (!hitEog || generatedTotal >= options.nPredict) {
                 break;
             }
 
             if (
-                generated_this_round == 0 ||
-                continue_round >= max_continue_rounds
+                generatedThisRound == 0 ||
+                continueRound >= options.maxContinueRounds
             ) {
                 break;
             }
 
-            const std::string continue_prompt =
+            const std::string continuePrompt =
                 "<|im_end|>\n"
                 "<|im_start|>user\n"
                 "Continue exactly where you stopped. "
@@ -577,16 +460,16 @@ static int qari_ocr_main(int argc, char ** argv) {
                 "<|im_end|>\n"
                 "<|im_start|>assistant\n";
 
-            mtmd_input_text continue_text = {
-                continue_prompt.c_str(),
+            mtmd_input_text continueText = {
+                continuePrompt.c_str(),
                 false,
                 true,
             };
 
-            mtmd_input_chunks * continue_chunks =
+            mtmd_input_chunks * continueChunks =
                 mtmd_input_chunks_init();
 
-            if (!continue_chunks) {
+            if (!continueChunks) {
                 fprintf(
                     stderr,
                     "\nerror: failed to allocate continuation chunks\n"
@@ -596,9 +479,9 @@ static int qari_ocr_main(int argc, char ** argv) {
 
             if (
                 mtmd_tokenize(
-                    mctx,
-                    continue_chunks,
-                    &continue_text,
+                    mtmdCtx,
+                    continueChunks,
+                    &continueText,
                     nullptr,
                     0
                 ) != 0
@@ -608,59 +491,59 @@ static int qari_ocr_main(int argc, char ** argv) {
                     "\nerror: failed to tokenize continuation prompt\n"
                 );
 
-                mtmd_input_chunks_free(continue_chunks);
+                mtmd_input_chunks_free(continueChunks);
                 break;
             }
 
             fprintf(
                 stderr,
                 "\n[OCR PHASE] Evaluating continuation prompt %d\n",
-                continue_round + 1
+                continueRound + 1
             );
 
-            const auto continuation_start = SteadyClock::now();
+            const auto continuationStart = SteadyClock::now();
 
-            const int continuation_result =
+            const int continuationResult =
                 mtmd_helper_eval_chunks(
-                    mctx,
-                    ctx,
-                    continue_chunks,
-                    n_past,
+                    mtmdCtx,
+                    llamaCtx,
+                    continueChunks,
+                    nPast,
                     0,
-                    ctx_params.n_batch,
+                    languageModelOptions.nBatch,
                     true,
-                    &n_past
+                    &nPast
                 );
 
-            const auto continuation_end = SteadyClock::now();
+            const auto continuationEnd = SteadyClock::now();
 
-            const double current_continuation_ms =
-                elapsed_ms(continuation_start, continuation_end);
+            const double currentContinuationMs =
+                ElapsedMs(continuationStart, continuationEnd);
 
-            continuation_total_ms += current_continuation_ms;
+            continuationTotalMs += currentContinuationMs;
 
             fprintf(
                 stderr,
                 "[OCR TIMING] Continuation prompt %d: %.2f ms\n",
-                continue_round + 1,
-                current_continuation_ms
+                continueRound + 1,
+                currentContinuationMs
             );
 
-            if (continuation_result != 0) {
+            if (continuationResult != 0) {
                 fprintf(
                     stderr,
                     "\nerror: failed to evaluate continuation prompt\n"
                 );
 
-                mtmd_input_chunks_free(continue_chunks);
+                mtmd_input_chunks_free(continueChunks);
                 break;
             }
 
-            mtmd_input_chunks_free(continue_chunks);
-            ++continue_round;
+            mtmd_input_chunks_free(continueChunks);
+            ++continueRound;
         }
 
-        const auto generation_end = SteadyClock::now();
+        const auto generationEnd = SteadyClock::now();
 
         printf("\n");
 
@@ -668,31 +551,31 @@ static int qari_ocr_main(int argc, char ** argv) {
         // 5. Generation timing report
         // ------------------------------------------------------------
 
-        const double generation_total_ms =
-            elapsed_ms(generation_start, generation_end);
+        const double generationTotalMs =
+            ElapsedMs(generationStart, generationEnd);
 
-        const double average_decode_ms =
-            decode_call_count > 0
-                ? decode_total_ms /
-                    static_cast<double>(decode_call_count)
+        const double averageDecodeMs =
+            decodeCallCount > 0
+                ? decodeTotalMs /
+                    static_cast<double>(decodeCallCount)
                 : 0.0;
 
-        if (decode_call_count == 0) {
-            minimum_decode_ms = 0.0;
+        if (decodeCallCount == 0) {
+            minimumDecodeMs = 0.0;
         }
 
-        const double tokens_per_second =
-            generation_total_ms > 0.0
-                ? static_cast<double>(generated_total) /
-                    (generation_total_ms / 1000.0)
+        const double tokensPerSecond =
+            generationTotalMs > 0.0
+                ? static_cast<double>(generatedTotal) /
+                    (generationTotalMs / 1000.0)
                 : 0.0;
 
-        const double measured_non_decode_ms =
+        const double measuredNonDecodeMs =
             std::max(
                 0.0,
-                generation_total_ms -
-                    decode_total_ms -
-                    continuation_total_ms
+                generationTotalMs -
+                    decodeTotalMs -
+                    continuationTotalMs
             );
 
         fprintf(
@@ -712,18 +595,18 @@ static int qari_ocr_main(int argc, char ** argv) {
             "[OCR TIMING] Continuation evaluation time:  %.2f ms\n"
             "[OCR TIMING] Other generation time:        %.2f ms\n"
             "-----------------------------------------------------\n",
-            generated_total,
-            generation_total_ms,
-            tokens_per_second,
-            decode_call_count,
-            decode_total_ms,
-            average_decode_ms,
-            minimum_decode_ms,
-            maximum_decode_ms,
-            sampling_total_ms,
-            console_output_total_ms,
-            continuation_total_ms,
-            measured_non_decode_ms
+            generatedTotal,
+            generationTotalMs,
+            tokensPerSecond,
+            decodeCallCount,
+            decodeTotalMs,
+            averageDecodeMs,
+            minimumDecodeMs,
+            maximumDecodeMs,
+            samplingTotalMs,
+            consoleOutputTotalMs,
+            continuationTotalMs,
+            measuredNonDecodeMs
         );
 
         // Print llama.cpp's own internal performance counters.
@@ -732,99 +615,99 @@ static int qari_ocr_main(int argc, char ** argv) {
             "\n[OCR PERF] llama.cpp context performance:\n"
         );
 
-        llama_perf_context_print(ctx);
+        llama_perf_context_print(llamaCtx);
 
         // ------------------------------------------------------------
         // 6. Save output
         // ------------------------------------------------------------
 
-        const auto output_save_start = SteadyClock::now();
+        const auto outputSaveStart = SteadyClock::now();
 
-        if (has_output_dir) {
+        if (qari::HasOutputDir(options)) {
             const std::string stem =
                 std::filesystem::path(
-                    current_image_path
+                    currentImagePath
                 ).stem().string();
 
-            const std::string per_image_output_path =
+            const std::string perImageOutputPath =
                 (
-                    std::filesystem::path(output_dir_path) /
+                    std::filesystem::path(options.outputDirPath) /
                     (stem + ".txt")
                 ).string();
 
-            FILE * fout =
-                ggml_fopen(per_image_output_path.c_str(), "wb");
+            FILE * outputFile =
+                ggml_fopen(perImageOutputPath.c_str(), "wb");
 
-            if (!fout) {
+            if (!outputFile) {
                 fprintf(
                     stderr,
                     "error: failed to open output file: %s\n",
-                    per_image_output_path.c_str()
+                    perImageOutputPath.c_str()
                 );
 
                 mtmd_input_chunks_free(chunks);
-                mtmd_bitmap_free(bmp);
+                mtmd_bitmap_free(bitmap);
                 llama_sampler_free(sampler);
-                mtmd_free(mctx);
-                llama_free(ctx);
-                llama_model_free(model);
+                mtmd_free(mtmdCtx);
+                llama_free(llamaCtx);
+                llama_model_free(llamaModel);
                 return 1;
             }
 
-            if (!output_text.empty()) {
+            if (!outputText.empty()) {
                 fwrite(
-                    output_text.data(),
+                    outputText.data(),
                     1,
-                    output_text.size(),
-                    fout
+                    outputText.size(),
+                    outputFile
                 );
             }
 
-            fclose(fout);
+            fclose(outputFile);
 
             fprintf(
                 stderr,
                 "saved output to: %s\n",
-                per_image_output_path.c_str()
+                perImageOutputPath.c_str()
             );
-        } else if (has_output_file) {
-            FILE * fout =
-                ggml_fopen(output_path.c_str(), "ab");
+        } else if (qari::HasOutputFile(options)) {
+            FILE * outputFile =
+                ggml_fopen(options.outputPath.c_str(), "ab");
 
-            if (!fout) {
+            if (!outputFile) {
                 fprintf(
                     stderr,
                     "error: failed to open output file: %s\n",
-                    output_path.c_str()
+                    options.outputPath.c_str()
                 );
 
                 mtmd_input_chunks_free(chunks);
-                mtmd_bitmap_free(bmp);
+                mtmd_bitmap_free(bitmap);
                 llama_sampler_free(sampler);
-                mtmd_free(mctx);
-                llama_free(ctx);
-                llama_model_free(model);
+                mtmd_free(mtmdCtx);
+                llama_free(llamaCtx);
+                llama_model_free(llamaModel);
                 return 1;
             }
 
-            if (image_idx > 0) {
-                fwrite("\n", 1, 1, fout);
+            if (imageIdx > 0) {
+                fwrite("\n", 1, 1, outputFile);
             }
 
-            if (!output_text.empty()) {
+            if (!outputText.empty()) {
                 fwrite(
-                    output_text.data(),
+                    outputText.data(),
                     1,
-                    output_text.size(),
-                    fout
+                    outputText.size(),
+                    outputFile
                 );
             }
 
-            fclose(fout);
+            fclose(outputFile);
         }
 
-        const auto output_save_end = SteadyClock::now();
-        const auto image_total_end = SteadyClock::now();
+        const auto outputSaveEnd = SteadyClock::now();
+        const auto imageTotalEnd = SteadyClock::now();
 
         fprintf(
             stderr,
@@ -839,67 +722,67 @@ static int qari_ocr_main(int argc, char ** argv) {
             "[OCR SUMMARY] Output tokens:               %d\n"
             "[OCR SUMMARY] Context tokens at end:       %d\n"
             "=====================================================\n",
-            elapsed_ms(bitmap_start, bitmap_end),
-            elapsed_ms(tokenize_start, tokenize_end),
-            elapsed_ms(multimodal_eval_start, multimodal_eval_end),
-            generation_total_ms,
-            elapsed_ms(output_save_start, output_save_end),
-            elapsed_ms(image_total_start, image_total_end),
-            generated_total,
-            static_cast<int>(n_past)
+            ElapsedMs(bitmapStart, bitmapEnd),
+            ElapsedMs(tokenizeStart, tokenizeEnd),
+            ElapsedMs(multimodalEvalStart, multimodalEvalEnd),
+            generationTotalMs,
+            ElapsedMs(outputSaveStart, outputSaveEnd),
+            ElapsedMs(imageTotalStart, imageTotalEnd),
+            generatedTotal,
+            static_cast<int>(nPast)
         );
 
         mtmd_input_chunks_free(chunks);
-        mtmd_bitmap_free(bmp);
+        mtmd_bitmap_free(bitmap);
     }
 
     llama_sampler_free(sampler);
-    mtmd_free(mctx);
-    llama_free(ctx);
-    llama_model_free(model);
+    mtmd_free(mtmdCtx);
+    llama_free(llamaCtx);
+    llama_model_free(llamaModel);
 
     return 0;
 }
 
 #if defined(_WIN32)
-static std::string wide_to_utf8(const wchar_t * wstr) {
-    if (!wstr) {
+static std::string WideToUtf8(const wchar_t * wideString) {
+    if (!wideString) {
         return {};
     }
-    int size = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, nullptr, 0, nullptr, nullptr);
+    int size = WideCharToMultiByte(CP_UTF8, 0, wideString, -1, nullptr, 0, nullptr, nullptr);
     if (size <= 1) {
         return {};
     }
-    std::string out((size_t) size - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wstr, -1, out.data(), size, nullptr, nullptr);
-    return out;
+    std::string utf8((size_t) size - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wideString, -1, utf8.data(), size, nullptr, nullptr);
+    return utf8;
 }
 
 int main() {
-    int argc_w = 0;
-    wchar_t ** argv_w = CommandLineToArgvW(GetCommandLineW(), &argc_w);
-    if (!argv_w || argc_w <= 0) {
+    int argcW = 0;
+    wchar_t ** argvW = CommandLineToArgvW(GetCommandLineW(), &argcW);
+    if (!argvW || argcW <= 0) {
         fprintf(stderr, "error: failed to parse command line\n");
         return 1;
     }
 
-    std::vector<std::string> argv_storage;
-    argv_storage.reserve((size_t) argc_w);
-    std::vector<char *> argv_utf8;
-    argv_utf8.reserve((size_t) argc_w);
+    std::vector<std::string> argvStorage;
+    argvStorage.reserve((size_t) argcW);
+    std::vector<char *> argvUtf8;
+    argvUtf8.reserve((size_t) argcW);
 
-    for (int i = 0; i < argc_w; ++i) {
-        argv_storage.emplace_back(wide_to_utf8(argv_w[i]));
+    for (int i = 0; i < argcW; ++i) {
+        argvStorage.emplace_back(WideToUtf8(argvW[i]));
     }
-    for (auto & arg : argv_storage) {
-        argv_utf8.push_back(arg.data());
+    for (auto & arg : argvStorage) {
+        argvUtf8.push_back(arg.data());
     }
 
-    LocalFree(argv_w);
-    return qari_ocr_main((int) argv_utf8.size(), argv_utf8.data());
+    LocalFree(argvW);
+    return QariOcrMain((int) argvUtf8.size(), argvUtf8.data());
 }
 #else
 int main(int argc, char ** argv) {
-    return qari_ocr_main(argc, argv);
+    return QariOcrMain(argc, argv);
 }
 #endif

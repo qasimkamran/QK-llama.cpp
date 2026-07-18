@@ -5,12 +5,12 @@
 #include "mtmd.h"
 #include "mtmd-helper.h"
 #include "qari-loader.h"
+#include "qari-output.h"
 #include "qari-types.h"
 
 #include <chrono>
 #include <clocale>
 #include <cstdio>
-#include <filesystem>
 #include <limits>
 #include <string>
 #include <thread>
@@ -623,87 +623,14 @@ static int QariOcrMain(int argc, char ** argv) {
 
         const auto outputSaveStart = SteadyClock::now();
 
-        if (qari::HasOutputDir(options)) {
-            const std::string stem =
-                std::filesystem::path(
-                    currentImagePath
-                ).stem().string();
-
-            const std::string perImageOutputPath =
-                (
-                    std::filesystem::path(options.outputDirPath) /
-                    (stem + ".txt")
-                ).string();
-
-            FILE * outputFile =
-                ggml_fopen(perImageOutputPath.c_str(), "wb");
-
-            if (!outputFile) {
-                fprintf(
-                    stderr,
-                    "error: failed to open output file: %s\n",
-                    perImageOutputPath.c_str()
-                );
-
-                mtmd_input_chunks_free(chunks);
-                mtmd_bitmap_free(bitmap);
-                llama_sampler_free(sampler);
-                mtmd_free(mtmdCtx);
-                llama_free(llamaCtx);
-                llama_model_free(llamaModel);
-                return 1;
-            }
-
-            if (!outputText.empty()) {
-                fwrite(
-                    outputText.data(),
-                    1,
-                    outputText.size(),
-                    outputFile
-                );
-            }
-
-            fclose(outputFile);
-
-            fprintf(
-                stderr,
-                "saved output to: %s\n",
-                perImageOutputPath.c_str()
-            );
-        } else if (qari::HasOutputFile(options)) {
-            FILE * outputFile =
-                ggml_fopen(options.outputPath.c_str(), "ab");
-
-            if (!outputFile) {
-                fprintf(
-                    stderr,
-                    "error: failed to open output file: %s\n",
-                    options.outputPath.c_str()
-                );
-
-                mtmd_input_chunks_free(chunks);
-                mtmd_bitmap_free(bitmap);
-                llama_sampler_free(sampler);
-                mtmd_free(mtmdCtx);
-                llama_free(llamaCtx);
-                llama_model_free(llamaModel);
-                return 1;
-            }
-
-            if (imageIdx > 0) {
-                fwrite("\n", 1, 1, outputFile);
-            }
-
-            if (!outputText.empty()) {
-                fwrite(
-                    outputText.data(),
-                    1,
-                    outputText.size(),
-                    outputFile
-                );
-            }
-
-            fclose(outputFile);
+        if (!qari::SaveOutputText(options, currentImagePath, imageIdx, outputText)) {
+            mtmd_input_chunks_free(chunks);
+            mtmd_bitmap_free(bitmap);
+            llama_sampler_free(sampler);
+            mtmd_free(mtmdCtx);
+            llama_free(llamaCtx);
+            llama_model_free(llamaModel);
+            return 1;
         }
 
         const auto outputSaveEnd = SteadyClock::now();

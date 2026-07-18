@@ -88,7 +88,15 @@ if (TARGET mtmd)
 endif()
 
 # qari ocr helper tool
-add_executable(llama-qari-ocr qari-ocr.cpp qari-types.cpp qari-types.h qari-loader.cpp qari-loader.h)
+add_executable(llama-qari-ocr
+    qari-ocr.cpp
+    qari-types.cpp
+    qari-types.h
+    qari-loader.cpp
+    qari-loader.h
+    qari-output.cpp
+    qari-output.h
+)
 set_target_properties(llama-qari-ocr PROPERTIES OUTPUT_NAME llama-qari-ocr)
 if(LLAMA_TOOLS_INSTALL)
     install(TARGETS llama-qari-ocr RUNTIME)

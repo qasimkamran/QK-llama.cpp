@@ -11,7 +11,7 @@ void PrintUsage(const char* prog)
 {
     fprintf(stderr,
         "Usage:\n"
-        "  %s -m <text-model.gguf> (-i <image> | --image-dir <dir>) [--mmproj <mmproj.gguf>] [--prompt <text>] [-n <predict>] [-ngl <layers>] [--image-min-tokens <n>] [--image-max-tokens <n>] [--max-continue-rounds <n>] [-o <output.txt> | --output-dir <dir>]\n\n"
+        "  %s -m <text-model.gguf> (-i <image> | --image-dir <dir>) [--mmproj <mmproj.gguf>] [--prompt <text>] [-n <predict>] [-ngl <layers>] [--image-min-tokens <n>] [--image-max-tokens <n>] [--max-continue-rounds <n>] [--gpu-duty <0..1>] [-o <output.txt> | --output-dir <dir>]\n\n"
         "Example:\n"
         "  %s -m ../qari-ocr-q8_0.gguf --mmproj ../qari-mmproj-f16.gguf -i document.jpg --prompt \"Extract all text exactly.\" -n 512 -ngl 99\n"
         "  %s -m ../qari-ocr-q8_0.gguf --mmproj ../qari-mmproj-f16.gguf --image-dir ./docs --prompt \"Extract all text exactly.\" -n 512 -ngl 99\n"

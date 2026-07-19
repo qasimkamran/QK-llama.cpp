@@ -22,6 +22,7 @@ struct Options {
     int imageMinTokens = 256;
     int imageMaxTokens = 1024;
     int maxContinueRounds = 4;
+    double gpuDuty = 0.6;
 };
 
 Options ParseOptions(int argc, char** argv);

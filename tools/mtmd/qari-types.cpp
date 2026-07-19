@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -49,6 +50,24 @@ bool ParseIntValue(const char* optionName, const char* value, int& out)
     }
 }
 
+bool ParseDoubleValue(const char* optionName, const char* value, double& out)
+{
+    try {
+        size_t parsedChars = 0;
+        const double parsedValue = std::stod(value, &parsedChars);
+        if (parsedChars != std::strlen(value)) {
+            fprintf(stderr, "error: invalid number for %s: %s\n", optionName, value);
+            return false;
+        }
+
+        out = parsedValue;
+        return true;
+    } catch (const std::exception&) {
+        fprintf(stderr, "error: invalid number for %s: %s\n", optionName, value);
+        return false;
+    }
+}
+
 } // namespace
 
 Options ParseOptions(int argc, char** argv)
@@ -87,6 +106,11 @@ Options ParseOptions(int argc, char** argv)
             ++i;
         } else if (strcmp(argv[i], "--max-continue-rounds") == 0 && i + 1 < argc) {
             if (!ParseIntValue(argv[i], argv[i + 1], opts.maxContinueRounds)) {
+                return {};
+            }
+            ++i;
+        } else if (strcmp(argv[i], "--gpu-duty") == 0 && i + 1 < argc) {
+            if (!ParseDoubleValue(argv[i], argv[i + 1], opts.gpuDuty)) {
                 return {};
             }
             ++i;
@@ -135,6 +159,11 @@ bool OptionsValid(const Options& opts)
             fprintf(stderr, "error: --output-dir is not a readable directory: %s\n", opts.outputDirPath.c_str());
             return false;
         }
+    }
+
+    if (!std::isfinite(opts.gpuDuty) || opts.gpuDuty < 0.0 || opts.gpuDuty > 1.0) {
+        fprintf(stderr, "error: --gpu-duty must be between 0 and 1\n");
+        return false;
     }
 
     return true;

@@ -18,8 +18,6 @@ namespace {
 
 using SteadyClock = std::chrono::steady_clock;
 
-constexpr double TargetGpuDuty = 0.60;
-
 struct GenerationMetrics {
     double minimumDecodeMs = std::numeric_limits<double>::max();
     double maximumDecodeMs = 0.0;
@@ -409,6 +407,7 @@ GenerationRoundResult GenerateTokenRound(
     GenerationMetrics& metrics,
     int& generatedTotal,
     int nPredict,
+    double gpuDuty,
     llama_pos& nPast
 )
 {
@@ -419,7 +418,7 @@ GenerationRoundResult GenerateTokenRound(
             llamaCtx,
             sampler,
             vocab,
-            TargetGpuDuty
+            gpuDuty
         );
 
         AccumulateGenerationStep(result, step, metrics);
@@ -502,6 +501,7 @@ GenerationResult GenerateText(
             metrics,
             generatedTotal,
             options.nPredict,
+            options.gpuDuty,
             nPast
         );
 

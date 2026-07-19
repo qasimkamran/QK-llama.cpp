@@ -27,6 +27,13 @@
 
 using SteadyClock = std::chrono::steady_clock;
 
+struct QariRuntime {
+    llama_model* llamaModel = nullptr;
+    llama_context* llamaCtx = nullptr;
+    mtmd_context* mtmdCtx = nullptr;
+    llama_sampler* sampler = nullptr;
+};
+
 static double ElapsedMs(
     const SteadyClock::time_point & start,
     const SteadyClock::time_point & end
@@ -34,6 +41,29 @@ static double ElapsedMs(
     return std::chrono::duration<double, std::milli>(
         end - start
     ).count();
+}
+
+static void FreeQariRuntime(QariRuntime& runtime)
+{
+    if (runtime.sampler) {
+        llama_sampler_free(runtime.sampler);
+        runtime.sampler = nullptr;
+    }
+
+    if (runtime.mtmdCtx) {
+        mtmd_free(runtime.mtmdCtx);
+        runtime.mtmdCtx = nullptr;
+    }
+
+    if (runtime.llamaCtx) {
+        llama_free(runtime.llamaCtx);
+        runtime.llamaCtx = nullptr;
+    }
+
+    if (runtime.llamaModel) {
+        llama_model_free(runtime.llamaModel);
+        runtime.llamaModel = nullptr;
+    }
 }
 
 static int QariOcrMain(int argc, char ** argv) {
@@ -63,14 +93,16 @@ static int QariOcrMain(int argc, char ** argv) {
     languageModelOptions.modelPath = options.modelPath;
     languageModelOptions.nGPULayers = options.nGpuLayers;
 
-    llama_model * llamaModel = qari::LoadLanguageModel(options.modelPath, languageModelOptions);
-    if (!llamaModel) {
+    QariRuntime runtime;
+
+    runtime.llamaModel = qari::LoadLanguageModel(options.modelPath, languageModelOptions);
+    if (!runtime.llamaModel) {
         return 1;
     }
 
-    llama_context * llamaCtx = qari::CreateLanguageModelContext(llamaModel, languageModelOptions);
-    if (!llamaCtx) {
-        llama_model_free(llamaModel);
+    runtime.llamaCtx = qari::CreateLanguageModelContext(runtime.llamaModel, languageModelOptions);
+    if (!runtime.llamaCtx) {
+        FreeQariRuntime(runtime);
         return 1;
     }
 
@@ -79,18 +111,17 @@ static int QariOcrMain(int argc, char ** argv) {
     visionModelOptions.imageMinTokens = options.imageMinTokens;
     visionModelOptions.imageMaxTokens = options.imageMaxTokens;
 
-    mtmd_context * mtmdCtx = qari::LoadMultimodalContext(options.mmprojPath, llamaModel, visionModelOptions);
-    if (!mtmdCtx) {
-        llama_free(llamaCtx);
-        llama_model_free(llamaModel);
+    runtime.mtmdCtx = qari::LoadMultimodalContext(options.mmprojPath, runtime.llamaModel, visionModelOptions);
+    if (!runtime.mtmdCtx) {
+        FreeQariRuntime(runtime);
         return 1;
     }
 
-    const llama_vocab* vocab = llama_model_get_vocab(llamaModel);
+    const llama_vocab* vocab = llama_model_get_vocab(runtime.llamaModel);
 
     auto samplerParams = llama_sampler_chain_default_params();
-    llama_sampler* sampler = llama_sampler_chain_init(samplerParams);
-    llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+    runtime.sampler = llama_sampler_chain_init(samplerParams);
+    llama_sampler_chain_add(runtime.sampler, llama_sampler_init_greedy());
 
     for (size_t imageIdx = 0; imageIdx < imagePaths.size(); ++imageIdx) {
         const std::string & currentImagePath = imagePaths[imageIdx];
@@ -99,9 +130,9 @@ static int QariOcrMain(int argc, char ** argv) {
 
         const auto imageTotalStart = SteadyClock::now();
 
-        llama_memory_clear(llama_get_memory(llamaCtx), true);
-        llama_sampler_reset(sampler);
-        llama_perf_context_reset(llamaCtx);
+        llama_memory_clear(llama_get_memory(runtime.llamaCtx), true);
+        llama_sampler_reset(runtime.sampler);
+        llama_perf_context_reset(runtime.llamaCtx);
 
         // ------------------------------------------------------------
         // 1. Load and decode the image file
@@ -111,7 +142,7 @@ static int QariOcrMain(int argc, char ** argv) {
         const auto bitmapStart = SteadyClock::now();
 
         qari::MultimodalInput multimodalInput;
-        multimodalInput.bitmap = qari::PrepareBitmap(mtmdCtx, currentImagePath);
+        multimodalInput.bitmap = qari::PrepareBitmap(runtime.mtmdCtx, currentImagePath);
 
         const auto bitmapEnd = SteadyClock::now();
 
@@ -122,10 +153,7 @@ static int QariOcrMain(int argc, char ** argv) {
                 currentImagePath.c_str()
             );
 
-            llama_sampler_free(sampler);
-            mtmd_free(mtmdCtx);
-            llama_free(llamaCtx);
-            llama_model_free(llamaModel);
+            FreeQariRuntime(runtime);
             return 1;
         }
 
@@ -140,7 +168,7 @@ static int QariOcrMain(int argc, char ** argv) {
         const auto tokenizeStart = SteadyClock::now();
 
         multimodalInput = qari::GetMultimodalInputFromMultimodalBitmap(
-            mtmdCtx,
+            runtime.mtmdCtx,
             multimodalInput.bitmap,
             options.prompt
         );
@@ -154,18 +182,12 @@ static int QariOcrMain(int argc, char ** argv) {
 
         if (!multimodalInput.chunks) {
             qari::FreeMultimodalInput(multimodalInput);
-            llama_sampler_free(sampler);
-            mtmd_free(mtmdCtx);
-            llama_free(llamaCtx);
-            llama_model_free(llamaModel);
+            FreeQariRuntime(runtime);
             return 1;
         }
 
         // ------------------------------------------------------------
         // 3. Vision encoding and language-model image prefill
-        //
-        // mtmd's own print_timings output should further divide this
-        // into "image slice encoded" and "image decoded".
         // ------------------------------------------------------------
 
         qari::PrintPhase("Evaluating vision input and image-token prefill");
@@ -175,8 +197,8 @@ static int QariOcrMain(int argc, char ** argv) {
         const auto multimodalEvalStart = SteadyClock::now();
 
         const bool evalOk = qari::EvaluateMultimodalInput(
-            mtmdCtx,
-            llamaCtx,
+            runtime.mtmdCtx,
+            runtime.llamaCtx,
             multimodalInput.chunks,
             languageModelOptions.nBatch,
             nPast
@@ -192,10 +214,7 @@ static int QariOcrMain(int argc, char ** argv) {
 
         if (!evalOk) {
             qari::FreeMultimodalInput(multimodalInput);
-            llama_sampler_free(sampler);
-            mtmd_free(mtmdCtx);
-            llama_free(llamaCtx);
-            llama_model_free(llamaModel);
+            FreeQariRuntime(runtime);
             return 1;
         }
 
@@ -216,9 +235,9 @@ static int QariOcrMain(int argc, char ** argv) {
         }
 
         qari::GenerationResult generationResult = qari::GenerateText(
-            mtmdCtx,
-            llamaCtx,
-            sampler,
+            runtime.mtmdCtx,
+            runtime.llamaCtx,
+            runtime.sampler,
             vocab,
             options,
             languageModelOptions,
@@ -239,7 +258,7 @@ static int QariOcrMain(int argc, char ** argv) {
             "\n[OCR PERF] llama.cpp context performance:\n"
         );
 
-        llama_perf_context_print(llamaCtx);
+        llama_perf_context_print(runtime.llamaCtx);
 
         // ------------------------------------------------------------
         // 6. Save output
@@ -249,10 +268,7 @@ static int QariOcrMain(int argc, char ** argv) {
 
         if (!qari::SaveOutputText(options, currentImagePath, imageIdx, generationResult.outputText)) {
             qari::FreeMultimodalInput(multimodalInput);
-            llama_sampler_free(sampler);
-            mtmd_free(mtmdCtx);
-            llama_free(llamaCtx);
-            llama_model_free(llamaModel);
+            FreeQariRuntime(runtime);
             return 1;
         }
 
@@ -273,10 +289,7 @@ static int QariOcrMain(int argc, char ** argv) {
         qari::FreeMultimodalInput(multimodalInput);
     }
 
-    llama_sampler_free(sampler);
-    mtmd_free(mtmdCtx);
-    llama_free(llamaCtx);
-    llama_model_free(llamaModel);
+    FreeQariRuntime(runtime);
 
     return 0;
 }

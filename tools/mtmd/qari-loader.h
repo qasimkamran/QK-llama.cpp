@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR LicenseRef-QARI-OCR-COMMERCIAL
+// Qari OCR addition: see NOTICE-QARI-OCR.md and LICENSE-QARI-OCR-COMMERCIAL.md
+
 #pragma once
 
 #include "llama.h"

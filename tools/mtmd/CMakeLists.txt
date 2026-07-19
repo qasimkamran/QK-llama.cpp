@@ -98,6 +98,8 @@ add_executable(llama-qari-ocr
     qari-output.h
     qari-report.cpp
     qari-report.h
+    qari-gen.cpp
+    qari-gen.h
 )
 set_target_properties(llama-qari-ocr PROPERTIES OUTPUT_NAME llama-qari-ocr)
 if(LLAMA_TOOLS_INSTALL)
